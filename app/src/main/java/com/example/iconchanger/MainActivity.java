@@ -7,18 +7,20 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.widget.EditText;
-import androidx.appcompat.app.AlertDialog;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.MediaStore;
+import android.provider.Settings;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.widget.ArrayAdapter;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.io.InputStream;
@@ -30,10 +32,13 @@ public class MainActivity extends AppCompatActivity {
 
     private static final int REQ_PICK_IMAGE = 1001;
 
-    private final List<AppInfo> apps = new ArrayList<>();
+    private final List<AppInfo> allApps = new ArrayList<>();
+    private final List<AppInfo> shownApps = new ArrayList<>();
     private AppInfo pendingApp = null;
     private Bitmap pendingBitmap = null;
     private ListView listView;
+    private TextView emptyView;
+    private ArrayAdapter<AppInfo> adapter;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -41,15 +46,47 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         listView = findViewById(R.id.list);
+        emptyView = findViewById(R.id.empty);
+        EditText search = findViewById(R.id.search);
+
         loadApps();
 
+        adapter = new ArrayAdapter<AppInfo>(this, R.layout.row_app, shownApps) {
+            @Override
+            public android.view.View getView(int position, android.view.View convertView, android.view.ViewGroup parent) {
+                if (convertView == null) {
+                    convertView = getLayoutInflater().inflate(R.layout.row_app, parent, false);
+                }
+                AppInfo a = getItem(position);
+                ImageView iv = convertView.findViewById(R.id.icon);
+                TextView label = convertView.findViewById(R.id.label);
+                TextView pkg = convertView.findViewById(R.id.pkg);
+                iv.setImageDrawable(a.icon);
+                label.setText(a.label);
+                pkg.setText(a.packageName);
+                return convertView;
+            }
+        };
+        listView.setAdapter(adapter);
+        listView.setEmptyView(emptyView);
+
         listView.setOnItemClickListener((parent, view, position, id) -> {
-            pendingApp = apps.get(position);
+            pendingApp = shownApps.get(position);
             Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
             pick.setType("image/*");
             pick.addCategory(Intent.CATEGORY_OPENABLE);
             startActivityForResult(Intent.createChooser(pick, "选择图标图片"), REQ_PICK_IMAGE);
         });
+
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                filter(s.toString());
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        filter("");
     }
 
     private void loadApps() {
@@ -61,25 +98,22 @@ public class MainActivity extends AppCompatActivity {
             ApplicationInfo ai = ri.activityInfo.applicationInfo;
             String pkg = ai.packageName;
             String label = pm.getApplicationLabel(ai).toString();
-            apps.add(new AppInfo(pkg, label, pm.getApplicationIcon(ai)));
+            allApps.add(new AppInfo(pkg, label, pm.getApplicationIcon(ai)));
         }
-        Collections.sort(apps, (a, b) -> a.label.compareToIgnoreCase(b.label));
+        Collections.sort(allApps, (a, b) -> a.label.compareToIgnoreCase(b.label));
+    }
 
-        ArrayAdapter<AppInfo> adapter = new ArrayAdapter<AppInfo>(this, R.layout.row_app, apps) {
-            @Override
-            public android.view.View getView(int position, android.view.View convertView, android.view.ViewGroup parent) {
-                if (convertView == null) {
-                    convertView = getLayoutInflater().inflate(R.layout.row_app, parent, false);
-                }
-                AppInfo a = getItem(position);
-                ImageView iv = convertView.findViewById(R.id.icon);
-                TextView tv = convertView.findViewById(R.id.label);
-                iv.setImageDrawable(a.icon);
-                tv.setText(a.label + "\n" + a.packageName);
-                return convertView;
+    private void filter(String q) {
+        shownApps.clear();
+        String needle = q.trim().toLowerCase();
+        for (AppInfo a : allApps) {
+            if (needle.isEmpty()
+                    || a.label.toLowerCase().contains(needle)
+                    || a.packageName.toLowerCase().contains(needle)) {
+                shownApps.add(a);
             }
-        };
-        listView.setAdapter(adapter);
+        }
+        adapter.notifyDataSetChanged();
     }
 
     @Override
@@ -87,17 +121,20 @@ public class MainActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != REQ_PICK_IMAGE || resultCode != Activity.RESULT_OK || data == null || pendingApp == null) {
             pendingApp = null;
+            pendingBitmap = null;
             return;
         }
         Uri uri = data.getData();
         if (uri == null) {
             pendingApp = null;
+            pendingBitmap = null;
             return;
         }
         Bitmap bmp = decodeSampled(uri, 192, 192);
         if (bmp == null) {
-            Toast.makeText(this, "无法读取图片", Toast.LENGTH_SHORT).show();
+            showPermissionDialog();
             pendingApp = null;
+            pendingBitmap = null;
             return;
         }
         pendingBitmap = bmp;
@@ -127,42 +164,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void createShortcut(AppInfo app, Bitmap iconBmp, String name) {
-        if (name == null || name.trim().isEmpty()) name = app.label;
-        name = name.trim();
-        PackageManager pm = getPackageManager();
-        Intent launchIntent = pm.getLaunchIntentForPackage(app.packageName);
-        if (launchIntent == null) {
-            Toast.makeText(this, "无法获取启动 Intent", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            android.content.pm.ShortcutManager sm = getSystemService(android.content.pm.ShortcutManager.class);
-            if (sm != null && sm.isRequestPinShortcutSupported()) {
-                android.content.pm.ShortcutInfo info = new android.content.pm.ShortcutInfo.Builder(this, app.packageName + "_" + System.currentTimeMillis())
-                        .setShortLabel(name)
-                        .setLongLabel(name)
-                        .setIcon(android.graphics.drawable.Icon.createWithBitmap(iconBmp))
-                        .setIntent(launchIntent)
-                        .build();
-                boolean ok = sm.requestPinShortcut(info, null);
-                Toast.makeText(this, ok ? "请在弹窗确认创建快捷方式" : "创建失败", Toast.LENGTH_SHORT).show();
-                return;
-            }
-        }
-
-        // Fallback for older launchers
-        Intent add = new Intent("com.android.launcher.action.INSTALL_SHORTCUT");
-        add.putExtra(Intent.EXTRA_SHORTCUT_NAME, name);
-        add.putExtra(Intent.EXTRA_SHORTCUT_INTENT, launchIntent);
-        add.putExtra("duplicate", false);
-        add.putExtra(Intent.EXTRA_SHORTCUT_ICON, iconBmp);
-        sendBroadcast(add);
-        Toast.makeText(this, "已发送创建快捷方式请求", Toast.LENGTH_SHORT).show();
-    }
-
     private void showNameDialog(AppInfo app) {
         EditText input = new EditText(this);
         input.setText(app.label);
@@ -181,6 +182,53 @@ public class MainActivity extends AppCompatActivity {
                     pendingApp = null;
                     pendingBitmap = null;
                 })
+                .show();
+    }
+
+    private void createShortcut(AppInfo app, Bitmap iconBmp, String name) {
+        if (name == null || name.trim().isEmpty()) name = app.label;
+        name = name.trim();
+        PackageManager pm = getPackageManager();
+        Intent launchIntent = pm.getLaunchIntentForPackage(app.packageName);
+        if (launchIntent == null) {
+            showPermissionDialog();
+            return;
+        }
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            android.content.pm.ShortcutManager sm = getSystemService(android.content.pm.ShortcutManager.class);
+            if (sm != null && sm.isRequestPinShortcutSupported()) {
+                android.content.pm.ShortcutInfo info = new android.content.pm.ShortcutInfo.Builder(this, app.packageName + "_" + System.currentTimeMillis())
+                        .setShortLabel(name)
+                        .setLongLabel(name)
+                        .setIcon(android.graphics.drawable.Icon.createWithBitmap(iconBmp))
+                        .setIntent(launchIntent)
+                        .build();
+                boolean ok = sm.requestPinShortcut(info, null);
+                if (!ok) showPermissionDialog();
+                return;
+            }
+        }
+
+        Intent add = new Intent("com.android.launcher.action.INSTALL_SHORTCUT");
+        add.putExtra(Intent.EXTRA_SHORTCUT_NAME, name);
+        add.putExtra(Intent.EXTRA_SHORTCUT_INTENT, launchIntent);
+        add.putExtra("duplicate", false);
+        add.putExtra(Intent.EXTRA_SHORTCUT_ICON, iconBmp);
+        sendBroadcast(add);
+    }
+
+    private void showPermissionDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("权限或启动器限制")
+                .setMessage("无法创建快捷方式或读取图片。请在系统设置中为本应用授予必要权限后重试。")
+                .setPositiveButton("去设置", (d, w) -> {
+                    Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                })
+                .setNegativeButton("取消", null)
                 .show();
     }
 }
