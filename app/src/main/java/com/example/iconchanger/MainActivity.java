@@ -165,24 +165,33 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showNameDialog(AppInfo app) {
-        EditText input = new EditText(this);
+        android.view.View view = getLayoutInflater().inflate(R.layout.dialog_name, null);
+        EditText input = view.findViewById(R.id.nameInput);
         input.setText(app.label);
         input.setSelectAllOnFocus(true);
-        new AlertDialog.Builder(this)
-                .setTitle("快捷方式名称")
-                .setView(input)
-                .setPositiveButton("创建", (dialog, which) -> {
-                    String name = input.getText().toString().trim();
-                    if (name.isEmpty()) name = app.label;
-                    createShortcut(app, pendingBitmap, name);
-                    pendingApp = null;
-                    pendingBitmap = null;
-                })
-                .setNegativeButton("取消", (dialog, which) -> {
-                    pendingApp = null;
-                    pendingBitmap = null;
-                })
-                .show();
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(view)
+                .setCancelable(true)
+                .create();
+        view.findViewById(R.id.nameInput);
+        // positive/negative via custom buttons? use dialog buttons
+        dialog.setButton(AlertDialog.BUTTON_POSITIVE, "创建", (d, w) -> {
+            String name = input.getText().toString().trim();
+            if (name.isEmpty()) name = app.label;
+            createShortcut(app, pendingBitmap, name);
+            pendingApp = null;
+            pendingBitmap = null;
+        });
+        dialog.setButton(AlertDialog.BUTTON_NEGATIVE, "取消", (d, w) -> {
+            pendingApp = null;
+            pendingBitmap = null;
+        });
+        dialog.setOnCancelListener(d -> {
+            pendingApp = null;
+            pendingBitmap = null;
+        });
+        dialog.show();
     }
 
     private void createShortcut(AppInfo app, Bitmap iconBmp, String name) {
